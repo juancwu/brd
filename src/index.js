@@ -8,6 +8,7 @@ const bookmark = new Bookmark();
 
 bookmark.on("added", (uuid, task) => {
   console.log("Task added to bookmark with uuid: " + uuid);
+  console.log(task);
 });
 
 bookmark.on("removed", (uuid) => {
@@ -29,19 +30,19 @@ app.post("/download", (req, res, next) => {
     destination: path.join(__dirname, "downloads"),
   };
 
-  if (body.filename) {
+  if (typeof body.filename === "string") {
     options.filename = body.filename;
   }
 
-  if (body.progressThrottle) {
+  if (typeof body.progressThrottle !== "undefined") {
     options.progressThrottle = parseInt(body.progressThrottle);
   }
 
-  if (body.bandwidthThrottle) {
+  if (typeof body.bandwidthThrottle !== "undefined") {
     options.bandwidthThrottle = parseInt(body.bandwidthThrottle);
   }
 
-  const downloader = new Downloader(options);
+  let downloader = new Downloader(options);
 
   downloader.on(DOWNLOADER_EVENTS.PROGRESS, (stats) => {
     console.log(
@@ -56,6 +57,7 @@ app.post("/download", (req, res, next) => {
     .then(() => {
       console.log("download completed");
       bookmark.remove(downloader.__options.uid);
+      downloader = null;
     })
     .catch((e) => {
       if (res.headersSent) {
@@ -68,6 +70,31 @@ app.post("/download", (req, res, next) => {
     status: "download started...",
     uuid: downloader.__options.uid,
   });
+});
+
+app.post("/cancel", async (req, res, next) => {
+  try {
+    if (!req.body) {
+      return next(new Error("Empty body"));
+    }
+
+    if (!req.body.uuid) {
+      return next(new Error("No uuid provided"));
+    }
+
+    let downloader = bookmark.get(req.body.uuid);
+
+    if (downloader) {
+      await downloader.cancel();
+      bookmark.remove(uuid);
+      downloader = null;
+      return res.send({ status: "Download cancelled", uuid });
+    } else {
+      return next(new Error("No download with id: " + uuid));
+    }
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get("/bookmarks", (req, res) => {

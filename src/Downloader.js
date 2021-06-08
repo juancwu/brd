@@ -11,6 +11,7 @@ const { v4: uuidv4 } = require("uuid");
 const DOWNLOADER_EVENTS = {
   IDLE: "idle",
   START: "start",
+  CANCEL: "cancel",
   DOWNLOAD: "download",
   COMPLETE: "complete",
   SAVED: "saved",
@@ -116,6 +117,8 @@ function Downloader(options) {
   this.__isDownloading = false;
   this.__isCancelled = false;
 
+  this.__state = "";
+
   this.__limiter = null;
 
   this.__setState(this.__states.IDLE);
@@ -142,6 +145,66 @@ Downloader.prototype.start = function () {
 
     that.__net.request.end(() => console.log("request end."));
   });
+};
+
+Downloader.prototype.cancel = async function () {
+  if (this.__net.response && !this.__net.response.isPaused()) {
+    this.__net.response.pause();
+  }
+
+  // unpipe everything
+  if (this.__limiter) {
+    this.__net.response
+      .unpipe(this.__limiter)
+      .unpipe(this.__fileStats.filestream);
+  } else {
+    this.__net.response.unpipe(this.__fileStats.filestream);
+  }
+
+  this.__net.response.destroy();
+
+  if (this.__net.request && !this.__net.request.destroyed) {
+    this.__net.request.destroy();
+  }
+
+  if (this.__net.response)
+    if (this.__fileStats.filestream) {
+      this.__fileStats.filestream.close();
+    }
+
+  await this.__removeFile();
+
+  // reset all values
+  this.__net.request = null;
+  this.__net.response = null;
+  this.__net.protocol = null;
+  this.__net.socket = null;
+
+  this.__fileStats.extension = "";
+  this.__fileStats.filename = "";
+  this.__fileStats.filepath = "";
+  this.__fileStats.filestream = null;
+  this.__fileStats.filesize = 0;
+  this.__fileStats.noExtFile = "";
+  this.__fileStats.tmpFilename = "";
+  this.__fileStats.tmpFilepath = "";
+
+  this.__downloadStats.downloaded = 0;
+  this.__downloadStats.progress = 0;
+  this.__downloadStats.total = 0;
+
+  this.__statsEstimate.bytes = 0;
+  this.__statsEstimate.prevBytes = 0;
+  this.__statsEstimate.recordedTime = 0;
+
+  this.__isDownloading = false;
+  this.__isPaused = false;
+  this.__isResumed = false;
+  this.__isCancelled = true;
+
+  this.__setState(this.__states.CANCELLED);
+
+  this.__emit(this.__events.CANCEL, this.__options.uuid);
 };
 
 Downloader.prototype.__initProcotol = function () {
@@ -192,6 +255,8 @@ Downloader.prototype.__requestDownload = function (resolve, reject) {
 Downloader.prototype.__startDownload = function (response, resolve, reject) {
   const that = this;
 
+  this.__isDownloading = true;
+
   this.__getFileStats(response);
 
   this.__emit(this.__events.DOWNLOAD, this.__options.uuid);
@@ -199,8 +264,6 @@ Downloader.prototype.__startDownload = function (response, resolve, reject) {
   this.__statsEstimate.recordedTime = new Date();
 
   response.on("data", (chunk) => that.__onProgress(chunk.length));
-
-  response.unpipe();
 
   if (this.__options.bandwidthThrottle > 0) {
     this.__limiter = new Limiter(this.__options.bandwidthThrottle);
@@ -419,6 +482,7 @@ Downloader.prototype.__removeFile = function () {
   return new Promise((resolve, reject) => {
     fs.access(this.__fileStats.tmpFilepath, (_err) => {
       if (_err) {
+        this.__emit(this.__events.FILE_REMOVED, this.__options.uuid);
         return resolve(true); // file does not exists.
       }
 
@@ -427,6 +491,7 @@ Downloader.prototype.__removeFile = function () {
           return reject(_err);
         }
 
+        this.__emit(this.__events.FILE_REMOVED, this.__options.uuid);
         resolve(true);
       });
     });
@@ -495,7 +560,11 @@ Downloader.prototype.__onProgress = function (receivedBytes) {
 };
 
 Downloader.prototype.__onError = function (err, _, reject) {
-  const that = this;
+  // const that = this;
+  this.__isDownloading = false;
+  this.__isPaused = false;
+  this.__isResumed = false;
+  this.__isCancelled = true;
   if (typeof this.__options.onError === "function") {
     this.__options.onError(err, this.__options.removeOnError, {
       filename: this.__fileStats.filename,
@@ -507,11 +576,10 @@ Downloader.prototype.__onError = function (err, _, reject) {
     });
     return reject();
   } else {
-    this.emit(that.__events.ERROR, err);
+    this.__emit(this.__events.ERROR, err, this.__options.uuid);
     if (this.__options.removeOnError) {
       this.__removeFile()
         .then(() => {
-          that.emit(that.__events.FILE_REMOVED);
           reject(err);
         })
         .catch((_err) => reject(_err));
