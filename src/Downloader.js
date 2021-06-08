@@ -10,14 +10,26 @@ const { v4: uuidv4 } = require("uuid");
 
 const DOWNLOADER_EVENTS = {
   IDLE: "idle",
+  START: "start",
   DOWNLOAD: "download",
   COMPLETE: "complete",
+  SAVED: "saved",
   PROGRESS: "progress",
   ERROR: "error",
   RESUMED: "resumed",
   BEFORE_SAVE: "before_save",
   PAUSED: "paused",
   FILE_REMOVED: "file_removed",
+  RETRY: "retry",
+};
+
+const DOWNLOADER_STATES = {
+  IDLE: 0,
+  DOWNLOAD: 1,
+  COMPLETE: 2,
+  ERROR: 3,
+  PAUSED: 4,
+  CANCELLED: 5,
 };
 
 /**
@@ -25,14 +37,14 @@ const DOWNLOADER_EVENTS = {
  * @param {object} options
  * @param {string} options.url
  * @param {string} options.destination
- * @param {string} [options.uid]
+ * @param {string} [options.uuid]
  * @param {string} [options.filename]
  * @param {string} [options.method = 'GET']
  * @param {boolean} [options.retry = false]
  * @param {boolean} [options.resumable = false]
- * @param {number} [options.bandwidthThrottle = 0] - 0 means no throttle
- * @param {number} [options.progressThrottle = 1000] - 1s for progress update
- * @param {number} [options.maxRetries = 1]
+ * @param {number} [options.bandwidthThrottle = 0] - 0 means no throttle. throttle > 100kb/s
+ * @param {number} [options.progressThrottle = 500] - 0.5s for progress update
+ * @param {number} [options.maxRetries = 3]
  * @param {boolean} [options.cloneFiles = true]
  * @param {boolean} [options.removeOnError = true]
  * @param {function} [options.onProgress]
@@ -46,14 +58,14 @@ function Downloader(options) {
   this.__options = Object.assign(
     {
       // todo: implement random string generator.
-      uid: this.__generateUID(),
+      uuid: this.__generateUID(),
       filename: "",
       method: "GET",
-      retry: false,
+      retry: true,
       resumable: false,
       bandwidthThrottle: 0,
-      progressThrottle: 1000,
-      maxRetries: 1,
+      progressThrottle: 500,
+      maxRetries: 3,
       cloneFiles: true,
       removeOnError: true,
       onProgress: null,
@@ -97,10 +109,17 @@ function Downloader(options) {
   };
 
   this.__events = DOWNLOADER_EVENTS;
+  this.__states = DOWNLOADER_STATES;
 
   this.__isResumed = false;
+  this.__isPaused = false;
+  this.__isDownloading = false;
+  this.__isCancelled = false;
 
   this.__limiter = null;
+
+  this.__setState(this.__states.IDLE);
+  this.__emit(this.__events.IDLE, this.__options.uuid);
 }
 
 util.inherits(Downloader, EventEmitter);
@@ -112,15 +131,16 @@ util.inherits(Downloader, EventEmitter);
 Downloader.prototype.start = function () {
   const that = this;
   return new Promise((resolve, reject) => {
-    this.__initProcotol();
-    this.__net.request = this.__requestDownload(resolve, reject);
+    that.__emit(that.__events.START, that.__options.uuid);
+    that.__initProcotol();
+    that.__net.request = that.__requestDownload(resolve, reject);
 
-    this.__net.request.on("error", (e) => {
+    that.__net.request.on("error", (e) => {
       return that.__onError(e, resolve, reject);
     });
-    this.__net.request.on("timeout", () => console.log("timeout"));
+    that.__net.request.on("timeout", () => console.log("timeout"));
 
-    this.__net.request.end(() => console.log("request end."));
+    that.__net.request.end(() => console.log("request end."));
   });
 };
 
@@ -174,11 +194,13 @@ Downloader.prototype.__startDownload = function (response, resolve, reject) {
 
   this.__getFileStats(response);
 
-  this.emit(this.__events.DOWNLOAD);
+  this.__emit(this.__events.DOWNLOAD, this.__options.uuid);
 
   this.__statsEstimate.recordedTime = new Date();
 
-  response.on("data", (chunk) => that.__getNewStatsEstimate(chunk.length));
+  response.on("data", (chunk) => that.__onProgress(chunk.length));
+
+  response.unpipe();
 
   if (this.__options.bandwidthThrottle > 0) {
     this.__limiter = new Limiter(this.__options.bandwidthThrottle);
@@ -189,16 +211,16 @@ Downloader.prototype.__startDownload = function (response, resolve, reject) {
     this.__limiter.on("resume", () => response.resume());
 
     this.__limiter.on("end", () => {
-      that.__fileStats.filestream.end();
-      that.__onBeforeSave();
+      console.log("limiter end event");
+      that.__onCompleted();
     });
 
     this.__limiter.on("error", (err) => that.__onError(err, resolve, reject));
   } else {
     response.pipe(this.__fileStats.filestream);
     response.on("end", () => {
-      that.__fileStats.filestream.end();
-      that.__onBeforeSave();
+      console.log("response end event");
+      that.__onCompleted();
     });
   }
 
@@ -238,7 +260,6 @@ Downloader.prototype.__getNewStatsEstimate = function (receivedBytes) {
     this.__statsEstimate.bytes =
       this.__downloadStats.downloaded - this.__statsEstimate.prevBytes;
     this.__statsEstimate.prevBytes = this.__downloadStats.downloaded;
-    this.emit(this.__events.PROGRESS, this.__getStats());
   }
 };
 
@@ -269,8 +290,6 @@ Downloader.prototype.__getFileStats = function (response) {
 
   this.__fileStats.extension = separated[0];
   this.__fileStats.noExtFile = separated[1];
-
-  console.log(separated);
 
   this.__checkForClonedFiles(); // reset filename if cloneFile is true and there are clones.
   this.__fileStats.filepath = this.__getFilepath(this.__fileStats.filename);
@@ -324,7 +343,7 @@ Downloader.prototype.__getFilepath = function (filename) {
  */
 Downloader.prototype.__getFilename = function (headers) {
   if (typeof headers === "undefined")
-    return `brd_${this.__options.uid}.download`;
+    return `brd_${this.__options.uuid}.download`;
 
   let filename = "";
 
@@ -340,7 +359,7 @@ Downloader.prototype.__getFilename = function (headers) {
     filename = filename.replace(/"/g, "");
     filename = filename.replace(/[\/\\]/g, "");
   } else {
-    filename = `_${this.__options.uid}.brd`;
+    filename = `_${this.__options.uuid}.brd`;
   }
 
   return filename;
@@ -400,7 +419,7 @@ Downloader.prototype.__removeFile = function () {
   return new Promise((resolve, reject) => {
     fs.access(this.__fileStats.tmpFilepath, (_err) => {
       if (_err) {
-        return resolve(true);
+        return resolve(true); // file does not exists.
       }
 
       fs.unlink(this.__fileStats.tmpFilepath, (_err) => {
@@ -418,10 +437,28 @@ Downloader.prototype.__generateUID = function () {
   return uuidv4();
 };
 
+Downloader.prototype.__setState = function (state) {
+  this.__state = state;
+};
+
+Downloader.prototype.__emit = function (eventName, ...data) {
+  if (!eventName) {
+    throw new Error("Cannot emit to undefined event.");
+  }
+
+  this.emit(eventName, ...data);
+};
+
 Downloader.prototype.__onBeforeSave = function () {
   let saveName = null;
   if (typeof this.__options.onBeforeSave === "function") {
     saveName = this.__options.onBeforeSave(this.__fileStats.filename);
+  } else {
+    this.__emit(
+      this.__events.BEFORE_SAVE,
+      this.__options.uuid,
+      this.__fileStats.filename
+    );
   }
 
   // if the custom onBeforeSave function returns undefined then just use the original save filename.
@@ -435,22 +472,57 @@ Downloader.prototype.__onBeforeSave = function () {
   );
 };
 
+Downloader.prototype.__onCompleted = function () {
+  // const that = this;
+  this.__fileStats.filestream.end();
+  if (typeof this.__options.onCompleted === "function") {
+    this.__options.onCompleted(this.__options.uuid);
+  } else {
+    this.__emit(this.__events.COMPLETE, this.__options.uuid);
+  }
+  this.__onBeforeSave();
+};
+
+Downloader.prototype.__onProgress = function (receivedBytes) {
+  // const that = this;
+
+  if (typeof this.__options.onProgress === "function") {
+    this.__options.onProgress(receivedBytes);
+  } else {
+    this.__getNewStatsEstimate(receivedBytes);
+    this.__emit(this.__events.PROGRESS, this.__getStats());
+  }
+};
+
 Downloader.prototype.__onError = function (err, _, reject) {
   const that = this;
-  this.emit(that.__events.ERROR, err);
-  if (this.__options.removeOnError) {
-    this.__removeFile()
-      .then(() => {
-        that.emit(that.__events.FILE_REMOVED);
-        reject(err);
-      })
-      .catch((_err) => reject(_err));
+  if (typeof this.__options.onError === "function") {
+    this.__options.onError(err, this.__options.removeOnError, {
+      filename: this.__fileStats.filename,
+      filepath: this.__fileStats.filepath,
+      tmpFilename: this.__fileStats.tmpFilename,
+      tmpFilepath: this.__fileStats.tmpFilepath,
+      extension: this.__fileStats.extension,
+      noExtensionFilename: this.__fileStats.noExtFile,
+    });
+    return reject();
   } else {
-    reject(err);
+    this.emit(that.__events.ERROR, err);
+    if (this.__options.removeOnError) {
+      this.__removeFile()
+        .then(() => {
+          that.emit(that.__events.FILE_REMOVED);
+          reject(err);
+        })
+        .catch((_err) => reject(_err));
+    } else {
+      reject(err);
+    }
   }
 };
 
 module.exports = {
   Downloader,
   DOWNLOADER_EVENTS,
+  DOWNLOADER_STATES,
 };
