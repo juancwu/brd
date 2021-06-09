@@ -2,9 +2,36 @@ const express = require("express");
 const { Downloader, DOWNLOADER_EVENTS } = require("./Downloader");
 const path = require("path");
 const Bookmark = require("./Bookmark");
+const { MASTER_EVENTS, Master } = require("./Master");
+const contants = require("./constants");
+const constants = require("./constants");
 
 const app = express();
 const bookmark = new Bookmark();
+const master = new Master();
+
+master.on(MASTER_EVENTS.SUBPROCESS_MESSAGE, (data) => {
+  if (data.error) {
+    console.log("Caught error");
+    console.log(data.error);
+    master.stop(data.pid);
+    return;
+  }
+
+  if (data.message) {
+    console.log(`Message from subprocess(${data.pid})`);
+    console.log(data.message);
+  }
+});
+
+master.on(MASTER_EVENTS.SUBPROCESS_DISCONNECT, () => {
+  console.log("Subprocess disconnected.");
+});
+
+master.on(MASTER_EVENTS.SUBPROCESS_ERROR, (err) => {
+  console.log("Subprocess error");
+  console.log(err);
+});
 
 bookmark.on("added", (uuid, task) => {
   console.log("Task added to bookmark with uuid: " + uuid);
@@ -42,34 +69,43 @@ app.post("/download", (req, res, next) => {
     options.bandwidthThrottle = parseInt(body.bandwidthThrottle);
   }
 
-  let downloader = new Downloader(options);
-
-  downloader.on(DOWNLOADER_EVENTS.PROGRESS, (stats) => {
-    console.log(
-      `Progress: ${stats.progress} - Downloaded: ${stats.downloaded} - Total: ${stats.total}`
+  if (body.daemon) {
+    const startedPids = master.start(
+      1,
+      constants.kDownloaderDaemonDir,
+      options
     );
-  });
+    res.send({ pids: startedPids });
+  } else {
+    let downloader = new Downloader(options);
 
-  bookmark.add(downloader, downloader.__options.uid);
-
-  downloader
-    .start()
-    .then(() => {
-      console.log("download completed");
-      bookmark.remove(downloader.__options.uid);
-      downloader = null;
-    })
-    .catch((e) => {
-      if (res.headersSent) {
-        next(e);
-      }
-      res.send({ error: e });
+    downloader.on(DOWNLOADER_EVENTS.PROGRESS, (stats) => {
+      console.log(
+        `Progress: ${stats.progress} - Downloaded: ${stats.downloaded} - Total: ${stats.total}`
+      );
     });
 
-  res.send({
-    status: "download started...",
-    uuid: downloader.__options.uid,
-  });
+    bookmark.add(downloader, downloader.__options.uid);
+
+    downloader
+      .start()
+      .then(() => {
+        console.log("download completed");
+        bookmark.remove(downloader.__options.uid);
+        downloader = null;
+      })
+      .catch((e) => {
+        if (res.headersSent) {
+          next(e);
+        }
+        res.send({ error: e });
+      });
+
+    res.send({
+      status: "download started...",
+      uuid: downloader.__options.uid,
+    });
+  }
 });
 
 app.post("/cancel", async (req, res, next) => {
@@ -95,6 +131,26 @@ app.post("/cancel", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.get("/kill/:pid", async (req, res, next) => {
+  let pid = req.params.pid;
+
+  if (!pid) return next(new Error("No pid provided."));
+
+  master.kill(pid);
+
+  res.send({ pid, status: "Killing..." });
+});
+
+app.get("stop/:pid", async (req, res, next) => {
+  let pid = req.params.pid;
+
+  if (!pid) return next(new Error("No pid provided."));
+
+  master.stop(pid);
+
+  res.send({ pid, status: "Stopping..." });
 });
 
 app.get("/bookmarks", (req, res) => {
