@@ -207,6 +207,19 @@ Downloader.prototype.cancel = async function () {
   this.__emit(this.__events.CANCEL, this.__options.uuid);
 };
 
+Downloader.prototype.getStats = function () {
+  return {
+    total: this.__downloadStats.total,
+    progress: this.__downloadStats.progress,
+    downloaded: this.__downloadStats.downloaded,
+    filename: this.__fileStats.filename,
+  };
+};
+
+Downloader.prototype.getState = function () {
+  return { state: this.__state, uuid: this.__options.uuid };
+};
+
 Downloader.prototype.__initProcotol = function () {
   this.__net.protocol = /^https:\/\//.test(this.__options.url) ? https : http;
   return;
@@ -324,15 +337,6 @@ Downloader.prototype.__getNewStatsEstimate = function (receivedBytes) {
       this.__downloadStats.downloaded - this.__statsEstimate.prevBytes;
     this.__statsEstimate.prevBytes = this.__downloadStats.downloaded;
   }
-};
-
-Downloader.prototype.__getStats = function () {
-  return {
-    total: this.__downloadStats.total,
-    progress: this.__downloadStats.progress,
-    downloaded: this.__downloadStats.downloaded,
-    filename: this.__fileStats.filename,
-  };
 };
 
 /**
@@ -555,7 +559,7 @@ Downloader.prototype.__onProgress = function (receivedBytes) {
     this.__options.onProgress(receivedBytes);
   } else {
     this.__getNewStatsEstimate(receivedBytes);
-    this.__emit(this.__events.PROGRESS, this.__getStats());
+    this.__emit(this.__events.PROGRESS, this.getStats());
   }
 };
 
