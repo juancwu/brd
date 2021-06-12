@@ -316,10 +316,10 @@ Downloader.prototype.__startDownload = function (response, resolve, reject) {
 /**
  *
  * @param {number} receivedBytes
- * @returns
+ * @returns {boolean} - whether onProgress event needs to be emitted.
  */
 Downloader.prototype.__getNewStatsEstimate = function (receivedBytes) {
-  if (!receivedBytes) return;
+  if (!receivedBytes) return false;
 
   const currentTime = new Date();
   const elapsedTime = currentTime - this.__statsEstimate.recordedTime;
@@ -338,7 +338,9 @@ Downloader.prototype.__getNewStatsEstimate = function (receivedBytes) {
     this.__statsEstimate.bytes =
       this.__downloadStats.downloaded - this.__statsEstimate.prevBytes;
     this.__statsEstimate.prevBytes = this.__downloadStats.downloaded;
+    return true;
   }
+  return false;
 };
 
 /**
@@ -560,8 +562,8 @@ Downloader.prototype.__onProgress = function (receivedBytes) {
   if (typeof this.__options.onProgress === "function") {
     this.__options.onProgress(receivedBytes);
   } else {
-    this.__getNewStatsEstimate(receivedBytes);
-    this.__emit(this.__events.PROGRESS, this.getStats());
+    let isEmit = this.__getNewStatsEstimate(receivedBytes);
+    if (isEmit) this.__emit(this.__events.PROGRESS, this.getStats());
   }
 };
 

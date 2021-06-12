@@ -105,7 +105,7 @@ Master.prototype.__clean = function () {
 
   pids.forEach((pid) => {
     let child = master.__threads[pid];
-    if (!child.connected && !child.killed) {
+    if (child.connected) {
       child.disconnect();
     }
 

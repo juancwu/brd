@@ -8,7 +8,8 @@ function disconnect() {
       // only kill when download is completed or not started
       process.kill(process.pid);
     }
-  } else if (process.kill(process.pid, 0)) { //   procress is running
+  } else if (process.kill(process.pid, 0)) {
+    //   procress is running
     // kill proccess due to error
     process.kill(process.pid);
   }
@@ -62,9 +63,9 @@ Daemon.prototype.start = function (metadata) {
         message: "Downloader daemon error.",
       });
       process.kill(process.pid);
+      _daemon.__running = false;
+      disconnect();
     });
-    _daemon.__running = false;
-    disconnect();
 };
 
 process.once("message", start);
