@@ -28,7 +28,7 @@ R.post("/", (req, res, next) => {
   }
 
   if (body.daemon) {
-    const startedPids = master.start(
+    const startedPids = req.app.get('master').start(
       1,
       constants.kDownloaderDaemonDir,
       options
