@@ -2,6 +2,26 @@ const { Downloader, DOWNLOADER_EVENTS } = require("./../Downloader");
 
 let daemon = null;
 
+function disconnect() {
+  if (daemon) {
+    if (!daemon.__running) {
+      // only kill when download is completed or not started
+      process.kill(process.pid);
+    }
+  } else if (process.kill(process.pid, 0)) { //   procress is running
+    // kill proccess due to error
+    process.kill(process.pid);
+  }
+}
+
+function start(metadata) {
+  daemon = new Daemon();
+  // by default, the Downloader only emits an error event but does not reject.
+  // setting this to true, it will only reject and not emit error event.
+  metadata["rejectOnError"] = true;
+  daemon.start(metadata);
+}
+
 function Daemon() {
   this.__running = false;
 }
@@ -33,6 +53,7 @@ Daemon.prototype.start = function (metadata) {
         });
       }
       _daemon.__running = false;
+      disconnect();
     })
     .catch((e) => {
       process.send({
@@ -42,20 +63,10 @@ Daemon.prototype.start = function (metadata) {
       });
       process.kill(process.pid);
     });
+    _daemon.__running = false;
+    disconnect();
 };
 
-process.once("message", (metadata) => {
-  daemon = new Daemon();
-  daemon.start(metadata);
-});
+process.once("message", start);
 
-process.once("disconnect", () => {
-  if (daemon) {
-    if (!daemon.__running) {
-      process.kill(process.pid);
-    }
-  } else if (process.kill(process.pid, 0)) {
-    //   procress is running
-    process.kill(process.pid);
-  }
-});
+process.once("disconnect", disconnect);

@@ -38,14 +38,20 @@ R.post("/", (req, res, next) => {
     let downloader = new Downloader(options);
 
     downloader.on(DOWNLOADER_EVENTS.PROGRESS, (stats) => {
-      //   console.log(
-      //     `Progress: ${stats.progress} - Downloaded: ${stats.downloaded} - Total: ${stats.total}`
-      //   );
+        console.log(
+          `Progress: ${stats.progress} - Downloaded: ${stats.downloaded} - Total: ${stats.total}`
+        );
     });
 
     downloader.on(DOWNLOADER_EVENTS.ERROR, (err) => {
       console.log("ERROR EVENT");
       console.log(err);
+      req.app.get("bookmark").remove(downloader.__options.uuid);
+      downloader = null; // free memory
+      if (res.headersSent) {
+        return next(err);
+      }
+      res.send({ error: err });
     });
 
     req.app.get("bookmark").add(downloader, downloader.__options.uuid);
@@ -56,12 +62,6 @@ R.post("/", (req, res, next) => {
         console.log("download completed");
         req.app.get("bookmark").remove(downloader.__options.uuid);
         downloader = null;
-      })
-      .catch((e) => {
-        if (res.headersSent) {
-          return next(e);
-        }
-        res.send({ error: e });
       });
 
     res.send({

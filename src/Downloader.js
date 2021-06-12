@@ -48,6 +48,7 @@ const DOWNLOADER_STATES = {
  * @param {number} [options.maxRetries = 3]
  * @param {boolean} [options.cloneFiles = true]
  * @param {boolean} [options.removeOnError = true]
+ * @param {boolean} [options.rejectOnError = false]
  * @param {function} [options.onProgress]
  * @param {function} [options.onError]
  * @param {function} [options.onPaused]
@@ -69,6 +70,7 @@ function Downloader(options) {
       maxRetries: 3,
       cloneFiles: true,
       removeOnError: true,
+      rejectOnError: false,
       onProgress: null,
       onError: null,
       onPaused: null,
@@ -564,7 +566,7 @@ Downloader.prototype.__onProgress = function (receivedBytes) {
 };
 
 Downloader.prototype.__onError = function (err, _, reject) {
-  // const that = this;
+  const that = this;
   this.__isDownloading = false;
   this.__isPaused = false;
   this.__isResumed = false;
@@ -578,17 +580,29 @@ Downloader.prototype.__onError = function (err, _, reject) {
       extension: this.__fileStats.extension,
       noExtensionFilename: this.__fileStats.noExtFile,
     });
-    return reject();
   } else {
-    this.__emit(this.__events.ERROR, err, this.__options.uuid);
     if (this.__options.removeOnError) {
       this.__removeFile()
         .then(() => {
-          reject(err);
+          if (that.__options.rejectOnError) {
+            reject(err);
+          } else {
+            that.__emit(that.__events.ERROR, err, that.__options.uuid);
+          }
         })
-        .catch((_err) => reject(_err));
+        .catch((_err) => {
+          if (that.__options.rejectOnError) {
+            reject(_err);
+          } else {
+            that.__emit(that.__events.ERROR, err, that.__options.uuid);
+          }
+        });
     } else {
-      reject(err);
+      if (this.__options.rejectOnError) {
+        reject(err);
+      } else {
+        this.__emit(this.__events.ERROR, err, this.__options.uuid);
+      }
     }
   }
 };
