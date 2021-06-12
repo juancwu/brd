@@ -1,14 +1,19 @@
 const express = require("express");
 const Bookmark = require("./Bookmark");
 const { MASTER_EVENTS, Master } = require("./Master");
+const { existsSync, mkdirSync } = require("fs");
+const { kDownloadDir } = require("./constants");
 
 const app = express();
 const bookmark = new Bookmark();
 const master = new Master();
 
+if (!existsSync(kDownloadDir)) {
+  mkdirSync(kDownloadDir);
+}
+
 master.on(MASTER_EVENTS.SUBPROCESS_MESSAGE, (data) => {
   if (data.error) {
-    console.log("Caught error");
     console.log(data.error);
     master.stop(data.pid);
     return;

@@ -57,6 +57,10 @@ Master.prototype.start = function (numOfThreads, daemon, metadata) {
 
     that.__threads[child.pid] = child;
     startedPids.push(child.pid);
+
+    setTimeout(() => {
+      child.disconnect();
+    }, 1000);
   }
 
   return startedPids;
@@ -93,6 +97,27 @@ Master.prototype.kill = function (pid) {
   }
 
   return;
+};
+
+Master.prototype.get = function (pid) {
+  let allThreads = [];
+  if (!pid) {
+    for (const [key, value] of Object.entries(this.__threads)) {
+      allThreads.push({
+        pid: key,
+        thread: value,
+      });
+    }
+  } else {
+    if (this.__threads.hasOwnProperty(pid)) {
+      allThreads.push({
+        pid: pid,
+        thread: this.__threads[pid],
+      });
+    }
+  }
+
+  return allThreads;
 };
 
 Master.prototype.__isRunning = function (pid) {

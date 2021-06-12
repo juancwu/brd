@@ -20,4 +20,22 @@ R.get("/stop/:pid", async (req, res, next) => {
   res.send({ pid, status: "Stopping..." });
 });
 
+R.get("/all", async (req, res, next) => {
+  let allThreads = req.app.get("master").get();
+
+  res.send({
+    allThreads,
+  });
+});
+
+R.get("/get", async (req, res, next) => {
+  if (!req.query.pid) return next(new Error("No pid provided"));
+
+  let thread = req.app.get("master").get(req.query.pid);
+
+  res.send({
+    thread,
+  });
+});
+
 module.exports = R;
